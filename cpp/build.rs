@@ -51,17 +51,10 @@ fn main() -> anyhow::Result<()> {
         .write_to_file(output_dir.join("resolvo_string_internal.h"));
 
     let mut config = default_config.clone();
-    config.export.exclude.extend(vec![
-        "Vector".into(),
-        "resolvo_vector_free".into(),
-        "resolvo_vector_allocate".into(),
-        "resolvo_vector_empty".into(),
-        "String".into(),
-        "resolvo_string_bytes".into(),
-        "resolvo_string_drop".into(),
-        "resolvo_string_clone".into(),
-        "resolvo_string_from_bytes".into(),
-    ]);
+    config
+        .export
+        .exclude
+        .extend(vec!["Vector".into(), "String".into()]);
     config.export.body.insert(
         "Slice".to_owned(),
         r"
