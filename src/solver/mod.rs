@@ -1,5 +1,5 @@
 use std::{any::Any, cell::RefCell, collections::HashSet, future::ready, ops::ControlFlow};
-
+use std::fmt::Display;
 pub use cache::SolverCache;
 use clause::{Clause, ClauseState, Literal};
 use decision::Decision;
@@ -33,6 +33,16 @@ struct AddClauseOutput {
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
     clauses_to_watch: Vec<ClauseId>,
 }
+
+/// Implement the Debug trait for `AddClauseOutput`
+/// Implementation of the Display trait for `AddClauseOutput`
+
+impl std::fmt::Display for AddClauseOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AddClauseOutput {{ new_requires_clauses: {:?}, conflicting_clauses: {:?}, negative_assertions: {:?}, clauses_to_watch: {:?} }}", self.new_requires_clauses, self.conflicting_clauses, self.negative_assertions, self.clauses_to_watch)
+    }
+}
+
 
 /// Drives the SAT solving process
 pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
@@ -106,9 +116,28 @@ impl From<Box<dyn Any>> for UnsolvableOrCancelled {
 }
 
 /// An error during the propagation step
+#[derive(Debug)]
 pub(crate) enum PropagationError {
     Conflict(InternalSolvableId, bool, ClauseId),
     Cancelled(Box<dyn Any>),
+}
+
+impl Display for PropagationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropagationError::Conflict(solvable, value, clause) => {
+                write!(
+                    f,
+                    "conflict while propagating {} caused by clause {:?}",
+                    value,
+                    clause
+                )
+            }
+            PropagationError::Cancelled(_) => {
+                write!(f, "propagation was cancelled")
+            }
+        }
+    }
 }
 
 impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
@@ -178,6 +207,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 }
             })
             .collect();
+
+        eprintln!("Solver steps: {:?}", steps);
 
         Ok(steps)
     }
@@ -554,6 +585,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         let mut level = 0;
 
         loop {
+            // Print the level which is used (do not use tracing)
+            if level == 0 {
+                eprintln!("Level 0: Resetting the decision loop");
+            } else {
+                eprintln!("Level {}: Starting the decision loop", level);
+            }
+
             // A level of 0 means the decision loop has been completely reset because a
             // partial solution was invalidated by newly added clauses.
             if level == 0 {
@@ -566,6 +604,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 // solution were the root is installable we found a
                 // solution that satisfies the user requirements.
                 tracing::info!("╤══ install <root> at level {level}",);
+                // Print with eprintln! instead of with tracing::info!
+                eprintln!("Install <root> at level {}", level);
+
                 self.decision_tracker
                     .try_add_decision(
                         Decision::new(InternalSolvableId::root(), true, ClauseId::install_root()),
@@ -577,15 +618,21 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 let output = self
                     .async_runtime
                     .block_on(self.add_clauses_for_solvables(vec![InternalSolvableId::root()]))?;
+                // eprintln!("Add clause output: {}", output);
                 if let Err(clause_id) = self.process_add_clause_output(output) {
+                    eprintln!("Unsolvable: {:?}", clause_id);
                     return Err(UnsolvableOrCancelled::Unsolvable(
                         self.analyze_unsolvable(clause_id),
                     ));
                 }
             }
 
+            eprintln!("Level {}: Propagating", level);
+
             // Propagate decisions from assignments above
             let propagate_result = self.propagate(level);
+
+            eprintln!("Propagate result: {:?}", propagate_result);
 
             // Handle propagation errors
             match propagate_result {
@@ -613,7 +660,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             // Enter the solver loop, return immediately if no new assignments have been
             // made.
+
+            eprintln!("Level {}: Resolving dependencies", level);
             level = self.resolve_dependencies(level)?;
+            eprintln!("Level {}: Done resolving dependencies", level);
 
             // We have a partial solution. E.g. there is a solution that satisfies all the
             // clauses that have been added so far.
@@ -638,10 +688,23 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
             if new_solvables.is_empty() {
                 // If no new literals were selected this solution is complete and we can return.
+                eprintln!("Level {}: No new solvables selected, solution is complete", level);
                 return Ok(());
             }
 
             tracing::debug!(
+                "====\n==Found newly selected solvables\n- {}\n====",
+                new_solvables
+                    .iter()
+                    .copied()
+                    .format_with("\n- ", |(id, derived_from), f| f(&format_args!(
+                        "{} (derived from {})",
+                        id.display(self.provider()),
+                        self.clauses.borrow()[derived_from].display(self.provider()),
+                    )))
+            );
+            // Same but with eprintln! instead of tracing::debug!
+            eprintln!(
                 "====\n==Found newly selected solvables\n- {}\n====",
                 new_solvables
                     .iter()
@@ -707,6 +770,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// it was provided by the user, and set its value to true.
     fn resolve_dependencies(&mut self, mut level: u32) -> Result<u32, UnsolvableOrCancelled> {
         loop {
+            // Print information about the problem
+            eprintln!("loop in resolve_dependencies: Level {}: Deciding", level);
+
             // Make a decision. If no decision could be made it means the problem is
             // satisfyable.
             let Some((candidate, required_by, clause_id)) = self.decide() else {
@@ -939,6 +1005,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     /// solvable has become false, in which case it picks a new solvable to
     /// watch (if available) or triggers an assignment.
     fn propagate(&mut self, level: u32) -> Result<(), PropagationError> {
+        // Same but using eprintln! instead of tracing::trace!
+        eprintln!("Propagate");
+
         if let Some(value) = self.provider().should_cancel_with_value() {
             return Err(PropagationError::Cancelled(value));
         };
@@ -1008,10 +1077,24 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             let mut predecessor_clause_id: Option<ClauseId> = None;
             let mut clause_id = self.watches.first_clause_watching_solvable(pkg);
             while !clause_id.is_null() {
-                debug_assert!(
-                    predecessor_clause_id != Some(clause_id),
-                    "Linked list is circular!"
+                // Print the clause id and the clause
+                tracing::trace!(
+                    "├─ Propagate clause {}",
+                    self.clauses.borrow()[clause_id].display(self.provider())
                 );
+                // Same but using eprintln! instead of tracing::trace!
+                eprintln!(
+                    "Propagate clause {}",
+                    self.clauses.borrow()[clause_id].display(self.provider())
+                );
+
+                if predecessor_clause_id == Some(clause_id) {
+                    // Raise fatal error with an error message
+                    // panic!(
+                    //     "Clause {} is watching itself! This is a bug in the watcher system.",
+                    //     clause_id
+                    // );
+                }
 
                 // Get mutable access to both clauses.
                 let mut clauses = self.clauses.borrow_mut();
