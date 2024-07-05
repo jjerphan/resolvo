@@ -272,6 +272,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     "┝━ adding clauses for dependencies of {}",
                     internal_solvable_id.display(self.provider()),
                 );
+                eprintln!(
+                    "Adding clauses for dependencies of {}",
+                    internal_solvable_id.display(self.provider())
+                );
 
                 // If the solvable is the root solvable, we can skip the dependency provider
                 // and use the root requirements and constraints directly.
@@ -348,6 +352,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                 "┝━ adding clauses for package '{}'",
                                 self.provider().display_name(dependency_name),
                             );
+                            eprintln!(
+                                "Adding clauses for package '{}'",
+                                self.provider().display_name(dependency_name),
+                            );
 
                             pending_futures.push(
                                 async move {
@@ -406,6 +414,11 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     // Get the solvable information and request its requirements and constraints
                     tracing::trace!(
                         "package candidates available for {}",
+                        self.provider().display_name(name_id)
+                    );
+
+                    eprintln!(
+                        "Package candidates available for {}",
                         self.provider().display_name(name_id)
                     );
 
@@ -483,6 +496,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                         self.provider().display_version_set(version_set_id),
                     );
 
+                    eprintln!(
+                        "Sorted candidates available for {} {}",
+                        self.provider()
+                            .display_name(self.provider().version_set_name(version_set_id)),
+                        self.provider().display_version_set(version_set_id),
+                    );
+
                     // Queue requesting the dependencies of the candidates as well if they are
                     // cheaply available from the dependency provider.
                     for &candidate in candidates {
@@ -532,6 +552,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 } => {
                     tracing::trace!(
                         "non matching candidates available for {} {}",
+                        self.provider()
+                            .display_name(self.provider().version_set_name(version_set_id)),
+                        self.provider().display_version_set(version_set_id),
+                    );
+
+                    eprintln!(
+                        "Non matching candidates available for {} {}",
                         self.provider()
                             .display_name(self.provider().version_set_name(version_set_id)),
                         self.provider().display_version_set(version_set_id),
@@ -730,6 +757,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             for &clause_id in &output.conflicting_clauses {
                 tracing::debug!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
                                         clause=self.clauses.borrow()[clause_id].display(self.provider()));
+                eprintln!("├─ added clause {clause} introduces a conflict which invalidates the partial solution",
+                          clause=self.clauses.borrow()[clause_id].display(self.provider()));
             }
 
             if let Err(_first_conflicting_clause_id) = self.process_add_clause_output(output) {
