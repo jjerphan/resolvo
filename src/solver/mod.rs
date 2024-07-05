@@ -1050,8 +1050,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         // Assertions derived from learnt rules
         for learn_clause_idx in 0..self.learnt_clause_ids.len() {
-            eprintln!("Assertions derived from learnt rules: {}", learn_clause_idx);
-
             let clause_id = self.learnt_clause_ids[learn_clause_idx];
             let clause = &self.clauses.borrow()[clause_id];
             let Clause::Learnt(learnt_index) = clause.kind else {
@@ -1078,8 +1076,6 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     PropagationError::Conflict(literal.solvable_id, decision, clause_id)
                 })?;
 
-            eprintln!("Assertions derived from learnt rules: Decided: {}", decision);
-
             if decided {
                 tracing::trace!(
                     "├─ Propagate assertion {} = {}",
@@ -1099,7 +1095,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         while let Some(decision) = self.decision_tracker.next_unpropagated() {
             let pkg = decision.solvable_id;
 
-            eprintln!("Watched solvables for {}", pkg.display(self.provider()));
+            // eprintln!("Watched solvables for {}", pkg.display(self.provider()));
 
             // Propagate, iterating through the linked list of clauses that watch this
             // solvable
@@ -1227,12 +1223,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                         remaining_watch.satisfying_value(),
                                         clause.display(self.provider()),
                                     );
-                                    eprintln!(
-                                        "Decided at the end of while loop: Propagate ForbidMultipleInstances {} = {}. {}",
-                                        remaining_watch.solvable_id.display(self.provider()),
-                                        remaining_watch.satisfying_value(),
-                                        clause.display(self.provider())
-                                    );
+                                    // eprintln!(
+                                    //     "Decided at the end of while loop: Propagate ForbidMultipleInstances {} = {}. {}",
+                                    //     remaining_watch.solvable_id.display(self.provider()),
+                                    //     remaining_watch.satisfying_value(),
+                                    //     clause.display(self.provider())
+                                    // );
                                 }
                             }
                         }

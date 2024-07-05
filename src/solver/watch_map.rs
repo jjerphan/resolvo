@@ -22,6 +22,7 @@ impl WatchMap {
 
     pub(crate) fn start_watching(&mut self, clause: &mut ClauseState, clause_id: ClauseId) {
         for (watch_index, watched_solvable) in clause.watched_literals.into_iter().enumerate() {
+            // TODO: can we skip the watch if the solvable is false
             let already_watching = self.first_clause_watching_solvable(watched_solvable);
             clause.link_to_clause(watch_index, already_watching);
             self.watch_solvable(watched_solvable, clause_id);

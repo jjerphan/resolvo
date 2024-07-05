@@ -244,6 +244,8 @@ impl<D: DependencyProvider> SolverCache<D> {
             Some(candidates) => Ok(candidates),
             None => {
                 let package_name = self.provider.version_set_name(version_set_id);
+                eprintln!("Getting sorted matching candidates for package: {:?}", package_name);
+
                 let matching_candidates = self
                     .get_or_cache_matching_candidates(version_set_id)
                     .await?;
