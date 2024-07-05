@@ -128,7 +128,8 @@ impl Display for PropagationError {
             PropagationError::Conflict(solvable, value, clause) => {
                 write!(
                     f,
-                    "conflict while propagating {} caused by clause {:?}",
+                    "conflict while propagating solvable {:?}, value {} caused by clause {:?}",
+                    solvable,
                     value,
                     clause
                 )
@@ -227,6 +228,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
     ) -> Result<AddClauseOutput, Box<dyn Any>> {
         let mut output = AddClauseOutput::default();
 
+        eprintln!("Add clauses for solvables");
+
         pub enum TaskResult<'i> {
             Dependencies {
                 solvable_id: InternalSolvableId,
@@ -264,7 +267,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         loop {
             // Iterate over all pending solvables and request their dependencies.
             for internal_solvable_id in pending_solvables.drain(..) {
-                // Get the solvable information and request its requirements and constraints
+                // Get the solvable informatio n and request its requirements and constraints
                 tracing::trace!(
                     "┝━ adding clauses for dependencies of {}",
                     internal_solvable_id.display(self.provider()),
@@ -553,6 +556,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 }
             }
         }
+
+        eprintln!("Done adding clauses for solvables");
 
         Ok(output)
     }
@@ -884,6 +889,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             solvable.display(self.provider()),
             required_by.display(self.provider())
         );
+        // Print with eprintln! instead of with tracing::info!
+        eprintln!(
+            "Install {} at level {} (required by {})",
+            solvable.display(self.provider()),
+            level,
+            required_by.display(self.provider())
+        );
 
         // Add the decision to the tracker
         self.decision_tracker
@@ -1015,11 +1027,15 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Negative assertions derived from other rules (assertions are clauses that
         // consist of a single literal, and therefore do not have watches)
         for &(solvable_id, clause_id) in &self.negative_assertions {
+            eprintln!("Negative assertions derived from other rules: {} = false", solvable_id.display(self.provider()));
+
             let value = false;
             let decided = self
                 .decision_tracker
                 .try_add_decision(Decision::new(solvable_id, value, clause_id), level)
                 .map_err(|_| PropagationError::Conflict(solvable_id, value, clause_id))?;
+
+            eprintln!("Negative assertions derived from other rules: Decided: {}", decided);
 
             if decided {
                 tracing::trace!(
@@ -1027,11 +1043,15 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     solvable_id.display(self.provider()),
                     value
                 );
+                // Same but using eprintln! instead of tracing::trace!
+                eprintln!("Negative assertions derived from other rules: Propagate assertion {} = {}", solvable_id.display(self.provider()), value);
             }
         }
 
         // Assertions derived from learnt rules
         for learn_clause_idx in 0..self.learnt_clause_ids.len() {
+            eprintln!("Assertions derived from learnt rules: {}", learn_clause_idx);
+
             let clause_id = self.learnt_clause_ids[learn_clause_idx];
             let clause = &self.clauses.borrow()[clause_id];
             let Clause::Learnt(learnt_index) = clause.kind else {
@@ -1058,9 +1078,17 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     PropagationError::Conflict(literal.solvable_id, decision, clause_id)
                 })?;
 
+            eprintln!("Assertions derived from learnt rules: Decided: {}", decision);
+
             if decided {
                 tracing::trace!(
                     "├─ Propagate assertion {} = {}",
+                    literal.solvable_id.display(self.provider()),
+                    decision
+                );
+                // Same but using eprintln! instead of tracing::trace!
+                eprintln!(
+                    "Assertions derived from learnt rules: Propagate assertion {} = {}",
                     literal.solvable_id.display(self.provider()),
                     decision
                 );
@@ -1070,6 +1098,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Watched solvables
         while let Some(decision) = self.decision_tracker.next_unpropagated() {
             let pkg = decision.solvable_id;
+
+            eprintln!("Watched solvables for {}", pkg.display(self.provider()));
 
             // Propagate, iterating through the linked list of clauses that watch this
             // solvable
@@ -1083,17 +1113,17 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                     self.clauses.borrow()[clause_id].display(self.provider())
                 );
                 // Same but using eprintln! instead of tracing::trace!
-                eprintln!(
-                    "Propagate clause {}",
-                    self.clauses.borrow()[clause_id].display(self.provider())
-                );
+                // eprintln!(
+                //     "while loop: Propagate clause {}",
+                //     self.clauses.borrow()[clause_id].display(self.provider())
+                // );
 
                 if predecessor_clause_id == Some(clause_id) {
                     // Raise fatal error with an error message
-                    // panic!(
-                    //     "Clause {} is watching itself! This is a bug in the watcher system.",
-                    //     clause_id
-                    // );
+                    panic!(
+                        "Clause {:?} is watching itself! This is a bug in the watcher system.",
+                        clause_id
+                    );
                 }
 
                 // Get mutable access to both clauses.
@@ -1114,6 +1144,23 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 // Configure the next clause to visit
                 let this_clause_id = clause_id;
                 clause_id = clause.next_watched_clause(pkg);
+
+                // Print info about the old predecessor clause id, the predecessor clause id, and this clause id
+                // eprintln!(
+                //     "while loop: old: {:?}, now: {:?}, next: {:?}",
+                //     old_predecessor_clause_id,
+                //     predecessor_clause_id,
+                //     clause_id,
+                // );
+
+                if predecessor_clause_id == Some(clause_id) || old_predecessor_clause_id == Some(clause_id) {
+                    // Raise fatal error with an error message
+                    panic!(
+                        "Clauses old_predecessor_clause_id={:?}, predecessor_clause_id={:?}, clause_id={:?} \
+                        are watching themself! This is a bug in the watcher system.",
+                        old_predecessor_clause_id, predecessor_clause_id, clause_id
+                    );
+                }
 
                 if let Some((watched_literals, watch_index)) = clause.watch_turned_false(
                     pkg,
@@ -1179,6 +1226,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                                         remaining_watch.solvable_id.display(self.provider()),
                                         remaining_watch.satisfying_value(),
                                         clause.display(self.provider()),
+                                    );
+                                    eprintln!(
+                                        "Decided at the end of while loop: Propagate ForbidMultipleInstances {} = {}. {}",
+                                        remaining_watch.solvable_id.display(self.provider()),
+                                        remaining_watch.satisfying_value(),
+                                        clause.display(self.provider())
                                     );
                                 }
                             }
