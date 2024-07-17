@@ -19,6 +19,8 @@ use crate::{
     Candidates, Dependencies, DependencyProvider, KnownDependencies, VersionSetId,
 };
 
+use std::collections::BinaryHeap;
+
 mod cache;
 pub(crate) mod clause;
 mod decision;
@@ -40,7 +42,7 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) cache: SolverCache<D>,
 
     pub(crate) clauses: RefCell<Arena<ClauseId, ClauseState>>,
-    requires_clauses: Vec<(InternalSolvableId, VersionSetId, ClauseId)>,
+    requires_clauses: BinaryHeap<(InternalSolvableId, VersionSetId, ClauseId)>,
     watches: WatchMap,
 
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
@@ -59,6 +61,10 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
 
     /// Additional constraints imposed by the root.
     root_constraints: Vec<VersionSetId>,
+
+    /// Variable and clauses activities for the MVSIDS heuristic
+    variable_activity: Vec<f64>,
+    clause_activity: Vec<f64>,
 }
 
 impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
@@ -80,6 +86,8 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             root_constraints: Default::default(),
             clauses_added_for_package: Default::default(),
             clauses_added_for_solvable: Default::default(),
+            variable_activity: Default::default(),
+            clause_activity: Default::default(),
         }
     }
 }
@@ -152,6 +160,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             decision_tracker: self.decision_tracker,
             root_requirements: self.root_requirements,
             root_constraints: self.root_constraints,
+            variable_activity: self.variable_activity,
+            clause_activity: self.clause_activity,
         }
     }
 
@@ -731,8 +741,8 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 .start_watching(&mut clauses[clause_id], clause_id);
         }
 
-        self.requires_clauses
-            .append(&mut output.new_requires_clauses);
+        self.requires_clauses.extend(output.new_requires_clauses);
+
         self.negative_assertions
             .append(&mut output.negative_assertions);
 
