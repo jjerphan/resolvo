@@ -35,6 +35,7 @@ struct AddClauseOutput {
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
     clauses_to_watch: Vec<ClauseId>,
 }
+type RequiresClause = (InternalSolvableId, VersionSetId, ClauseId);
 
 /// Drives the SAT solving process
 pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
@@ -42,7 +43,12 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     pub(crate) cache: SolverCache<D>,
 
     pub(crate) clauses: RefCell<Arena<ClauseId, ClauseState>>,
-    requires_clauses: BinaryHeap<(InternalSolvableId, VersionSetId, ClauseId)>,
+
+    // Find ways to:
+    //  - sort the heap on the activity of the solvables (using the Ord trait)
+    //  - rebalance the heap
+    //  - update the heap
+    requires_clauses: BinaryHeap<RequiresClause>,
     watches: WatchMap,
 
     negative_assertions: Vec<(InternalSolvableId, ClauseId)>,
@@ -63,8 +69,18 @@ pub struct Solver<D: DependencyProvider, RT: AsyncRuntime = NowOrNeverRuntime> {
     root_constraints: Vec<VersionSetId>,
 
     /// Variable and clauses activities for the MVSIDS heuristic
-    variable_activity: Vec<f64>,
-    clause_activity: Vec<f64>,
+    variable_activity: Mapping<InternalSolvableId, f64>,
+    clause_activity: Mapping<ClauseId, f64>,
+
+    /// The increment for the variable activity
+    var_inc: f64,
+    /// The increment for the clause activity
+    cla_inc: f64,
+
+    /// The variable activity decay factor
+    var_decay: f64,
+    /// The clause activity decay factor
+    cla_decay: f64,
 }
 
 impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
@@ -88,6 +104,10 @@ impl<D: DependencyProvider> Solver<D, NowOrNeverRuntime> {
             clauses_added_for_solvable: Default::default(),
             variable_activity: Default::default(),
             clause_activity: Default::default(),
+            var_inc: 1.,
+            cla_inc: 1.,
+            var_decay: 0.95,
+            cla_decay: 0.999,
         }
     }
 }
@@ -162,6 +182,10 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
             root_constraints: self.root_constraints,
             variable_activity: self.variable_activity,
             clause_activity: self.clause_activity,
+            var_inc: self.var_inc,
+            cla_inc: self.cla_inc,
+            var_decay: self.var_decay,
+            cla_decay: self.cla_decay,
         }
     }
 
@@ -185,6 +209,13 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         self.clauses = Default::default();
         self.root_requirements = root_requirements;
         self.root_constraints = root_constraints;
+        self.variable_activity = Default::default();
+        self.clause_activity = Default::default();
+
+        self.var_inc = 1.;
+        self.cla_inc = 1.;
+        self.var_decay = 0.95;
+        self.cla_decay = 0.999;
 
         // The first clause will always be the install root clause. Here we verify that
         // this is indeed the case.
@@ -727,7 +758,54 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
                 self.decision_tracker.clear();
                 level = 0;
             }
+
+            self.decay_variable_activity();
+            self.decay_clause_activity();
         }
+    }
+
+    fn decay_variable_activity(&mut self) {
+        self.var_inc *= 1. / self.var_decay;
+    }
+
+    fn bump_variable_activity(&mut self, v: InternalSolvableId) {
+        self.bump_variable_activity_inc(v, self.var_inc);
+    }
+
+    fn bump_variable_activity_inc(&mut self, v: InternalSolvableId, inc: f64) {
+        let a = self.variable_activity.get(v).unwrap_or(&1.);
+        self.variable_activity.insert(v, a + inc);
+
+        // Rescale down not to overflow
+        // if self.variable_activity.get(v).unwrap() > &1e100 {
+        //     for (id, activity) in self.variable_activity.iter() {
+        //         self.variable_activity.insert(id, activity * 1e-100);
+        //     }
+        //     self.var_inc *= 1e-100;
+        // }
+
+        // Update `self.requires_clauses` with respect to the variable activity.
+        // Find a way to order the `MaxHeap` by the activity of the solvables defining
+        // the `Ord` trait.
+    }
+
+    fn decay_clause_activity(&mut self) { self.cla_inc *= 1. / self.cla_decay; }
+
+    fn bump_clause_activity(&mut self, c: ClauseId) {
+        let clause_activity = self.clause_activity.get(c).unwrap_or(&1.);
+
+        // Add cla_inc to the clause activity
+        self.clause_activity.insert(c, clause_activity + self.cla_inc);
+
+        // Rescale down not to overflow
+        // if self.clause_activity.get(c).unwrap() > &1e20 {
+        //     // Multiplies all clauses' activities by 1e-20
+        //     for (id, &activity) in self.clause_activity.iter() {
+        //         self.clause_activity.insert(id, activity * 1e-20);
+        //     }
+        //
+        //     self.cla_inc *= 1e-20;
+        // }
     }
 
     fn process_add_clause_output(&mut self, mut output: AddClauseOutput) -> Result<(), ClauseId> {
@@ -1006,7 +1084,12 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         // Negative assertions derived from other rules (assertions are clauses that
         // consist of a single literal, and therefore do not have watches)
-        for &(solvable_id, clause_id) in &self.negative_assertions {
+        let negative_assertions = self.negative_assertions.clone();
+
+        for &(solvable_id, clause_id) in &negative_assertions {
+            self.bump_clause_activity(clause_id);
+            self.bump_variable_activity(solvable_id);
+
             let value = false;
             let decided = self
                 .decision_tracker
@@ -1025,6 +1108,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Assertions derived from learnt rules
         for learn_clause_idx in 0..self.learnt_clause_ids.len() {
             let clause_id = self.learnt_clause_ids[learn_clause_idx];
+            self.bump_clause_activity(clause_id);
             let clause = &self.clauses.borrow()[clause_id];
             let Clause::Learnt(learnt_index) = clause.kind else {
                 unreachable!();
@@ -1062,6 +1146,9 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
         // Watched solvables
         while let Some(decision) = self.decision_tracker.next_unpropagated() {
             let pkg = decision.solvable_id;
+
+            // Must we bump the activity, here?
+            self.bump_variable_activity(pkg);
 
             // Propagate, iterating through the linked list of clauses that watch this
             // solvable
@@ -1209,6 +1296,7 @@ impl<D: DependencyProvider, RT: AsyncRuntime> Solver<D, RT> {
 
         tracing::info!("=== ANALYZE UNSOLVABLE");
 
+        self.bump_clause_activity(clause_id);
         let mut involved = HashSet::new();
         self.clauses.borrow()[clause_id].kind.visit_literals(
             &self.learnt_clauses,
